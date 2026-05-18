@@ -1,0 +1,322 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>situate</title>
+<style>
+:root { --bg:#fff; --fg:#1a1a1a; --muted:#555; --bar:#fff;
+        --border:#ccc; --span:rgba(120,120,120,0.18); --spanstroke:#555; }
+body.dark { --bg:#1e1e1e; --fg:#e4e4e4; --muted:#9a9a9a; --bar:#252526;
+        --border:#444; --span:rgba(200,200,200,0.20); --spanstroke:#aaa; }
+body { font-family: sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+#bar { position: sticky; top: 0; background: var(--bar); padding: 8px;
+       border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: center; }
+#bar { font-size: 13px; }
+#nav { display: flex; align-items: center; gap: 4px; }
+#nav button { padding: 1px 6px; line-height: 1; }
+#jump { width: 64px; }
+#dir { padding: 1px 7px; }
+.grow { flex: 1; }
+#range { color: var(--muted); min-width: 110px; text-align: center;
+         font-variant-numeric: tabular-nums; }
+.row { border: 2px solid transparent; padding: 4px 6px; display: flex;
+       flex-direction: column; gap: 1px; }
+.row.flash { border-color: #2ca02c; }
+.rhead { display: flex; align-items: center; gap: 10px; font-weight: bold;
+         line-height: 1.1; }
+.rhead .nm { font-weight: normal; color: var(--muted); }
+.rbody { display: flex; align-items: center; gap: 8px; }
+.rbody button { font-size: 11px; padding: 2px 10px; flex: none; }
+.scroll { overflow-x: auto; text-align: center; flex: 1; }
+.scroll .plot { display: inline-block; text-align: left; }
+.plot { position: relative; height: 140px; }
+.plot img { display: block; position: absolute; left: 0; top: 0; }
+.plot svg { position: absolute; left: 0; top: 0; }
+.span-rect { fill: var(--span); stroke: var(--spanstroke); cursor: move; }
+.span-rect.sel { stroke: #d62728; stroke-width: 2; }
+.handle { fill: rgba(0,0,0,0.0); cursor: ew-resize; }
+.span-lbl { font-size: 10px; fill: var(--fg); pointer-events: none; }
+.span-x { font: bold 13px sans-serif; fill: #d62728; cursor: pointer; }
+#clear { color: #fff; background: #d62728; border: none; padding: 2px 9px;
+         border-radius: 3px; cursor: pointer; font-size: 12px; }
+#pp { width: 48px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="nav">
+    <button id="prev" title="previous page">&#9664;</button>
+    <span id="range"></span>
+    <button id="next" title="next page">&#9654;</button>
+    <input id="jump" type="number" min="0" title="go to absolute seq idx, then Enter">
+    <select id="pp" title="seqs per page">
+      <option>3</option><option>5</option><option selected>10</option>
+      <option>20</option><option>50</option>
+    </select>
+  </span>
+  <label>sort <select id="sort">
+    <option value="idx">idx</option>
+    <option value="name">name</option>
+    <option value="pred">pred activity</option>
+  </select></label>
+  <button id="dir" title="ascending / descending">&#8593;</button>
+  <label>cell line <select id="cl"></select></label>
+  <label><input type="checkbox" id="nameTog" checked> Name</label>
+  <label><input type="checkbox" id="hyp" checked> Hypothetical</label>
+  <label><input type="checkbox" id="dark"> Dark</label>
+  <span class="grow"></span>
+  <a id="dl" href="export.csv">Download CSV</a>
+  <button id="clear" title="wipe the continuous annotation cache">Clear cache</button>
+</div>
+<div id="rows"></div>
+<script>
+const PX = 5, H = 140;
+let N = 0, L = 0, cur = 0, genK = 0, HAS_OHE = false, MODE = "hyp", PAGE = 10, CL = "";
+let TOTAL = 0, SORT = "idx", DIR = "asc", SHOW_NAME = true;
+let lastData = [];
+const SVGNS = "http://www.w3.org/2000/svg";
+
+async function init() {
+  const m = await (await fetch("meta")).json();
+  N = m.n_seqs; L = m.seq_len; HAS_OHE = !!m.has_ohe;
+  CL = m.cell_line;
+  const clSel = document.getElementById("cl");
+  for (const c of m.cell_lines) {
+    const o = document.createElement("option");
+    o.value = c; o.textContent = c; if (c === CL) o.selected = true;
+    clSel.appendChild(o);
+  }
+  clSel.disabled = m.cell_lines.length < 2;
+  clSel.onchange = () => { CL = clSel.value; cur = 0; load(); };
+  document.getElementById("sort").onchange = e => {
+    SORT = e.target.value; cur = 0; load();
+  };
+  document.getElementById("dir").onclick = e => {
+    DIR = DIR === "asc" ? "desc" : "asc";
+    e.target.innerHTML = DIR === "asc" ? "&#8593;" : "&#8595;";
+    cur = 0; load();
+  };
+  document.getElementById("prev").onclick = () => { cur = Math.max(0, cur - PAGE); load(); };
+  document.getElementById("next").onclick = () => { cur = Math.min(Math.max(0, TOTAL - PAGE), cur + PAGE); load(); };
+  const jump = document.getElementById("jump");
+  jump.onchange = async () => {                 // absolute seq idx 0..N-1
+    let v = parseInt(jump.value);
+    if (isNaN(v) || v < 0 || v >= N) return;
+    const r = await (await fetch(
+      `pos?idx=${v}&sort=${SORT}&dir=${DIR}&cl=${CL}`)).json();
+    cur = Math.max(0, r.pos); load();
+  };
+  document.getElementById("pp").onchange = e => {
+    PAGE = parseInt(e.target.value) || 10; cur = 0; load();
+  };
+  document.getElementById("clear").onclick = async () => {
+    if (!confirm("Wipe the entire annotation cache (.csv)? This cannot be undone.")) return;
+    await fetch("clear", { method: "POST" });
+    load();
+  };
+  document.getElementById("nameTog").onchange = e => {
+    SHOW_NAME = e.target.checked; render();
+  };
+  const hyp = document.getElementById("hyp");
+  hyp.disabled = !HAS_OHE;                 // no OHE -> hypothetical only
+  hyp.onchange = () => {
+    MODE = hyp.checked ? "hyp" : "obs";
+    document.querySelectorAll(".row").forEach(row => {
+      const im = row.querySelector(".plot img");
+      if (im) im.src = `logo/${row.dataset.idx}.png?mode=${MODE}&cl=${CL}`;
+    });
+  };
+  const dk = document.getElementById("dark");
+  dk.checked = localStorage.getItem("situate_dark") === "1";
+  document.body.classList.toggle("dark", dk.checked);
+  dk.onchange = () => {
+    document.body.classList.toggle("dark", dk.checked);
+    localStorage.setItem("situate_dark", dk.checked ? "1" : "0");
+  };
+  load();
+}
+
+async function load() {
+  const res = await (await fetch(
+    `batch?start=${cur}&n=${PAGE}&sort=${SORT}&dir=${DIR}&cl=${CL}`)).json();
+  lastData = res.items;
+  TOTAL = res.total;
+  if (cur > 0 && cur >= TOTAL) { cur = 0; return load(); }
+  const last = cur + lastData.length;
+  document.getElementById("range").textContent =
+    `${TOTAL ? cur + 1 : 0}–${last} / ${TOTAL}`;
+  render();
+}
+
+function render() {
+  const root = document.getElementById("rows");
+  root.innerHTML = "";
+  for (const d of lastData) root.appendChild(makeRow(d));
+}
+
+function makeRow(d) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.dataset.idx = d.idx;
+  const head = document.createElement("div");
+  head.className = "rhead";
+  const idxEl = document.createElement("span");
+  idxEl.textContent = "idx " + d.idx;
+  head.appendChild(idxEl);
+  if (SHOW_NAME && d.name) {
+    const nm = document.createElement("span");
+    nm.className = "nm"; nm.textContent = d.name;
+    head.appendChild(nm);
+  }
+  if (d.pred != null) {
+    const pr = document.createElement("span");
+    pr.className = "nm"; pr.textContent = `pred ${d.pred}`;
+    head.appendChild(pr);
+  }
+  const scroll = document.createElement("div");
+  scroll.className = "scroll";
+  const plot = document.createElement("div");
+  plot.className = "plot";
+  const W = L * PX;
+  plot.style.width = W + "px";
+
+  const img = document.createElement("img");
+  img.width = W; img.height = H;
+  img.src = `logo/${d.idx}.png?mode=${MODE}&cl=${CL}`;
+  plot.appendChild(img);
+
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  plot.appendChild(svg);
+
+  const spans = d.spans.map(s => ({ ...s }));
+  const ctx = { svg, spans, W, sel: null, idx: d.idx, row };
+  renderSpans(ctx);
+  attachCreate(ctx);
+
+  scroll.appendChild(plot);
+  row.tabIndex = 0;
+  row.addEventListener("keydown", e => {
+    if ((e.key === "Delete" || e.key === "Backspace") && ctx.sel != null) {
+      ctx.spans.splice(ctx.sel, 1); ctx.sel = null;
+      renderSpans(ctx); save(ctx);
+    }
+  });
+  const body = document.createElement("div");
+  body.className = "rbody";
+  body.appendChild(scroll);
+  row.appendChild(head); row.appendChild(body);
+  return row;
+}
+
+// Autosave: every create / edit / delete persists immediately to the
+// continuous .csv cache (keyed by universal seq idx).
+async function save(ctx) {
+  const r = await fetch(`set/${ctx.idx}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spans: ctx.spans }),
+  });
+  if ((await r.json()).ok) {
+    ctx.row.classList.add("flash");
+    setTimeout(() => ctx.row.classList.remove("flash"), 600);
+  }
+}
+
+function renderSpans(ctx) {
+  const { svg, spans } = ctx;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  spans.forEach((s, i) => {
+    const x0 = s.start * PX, x1 = s.end * PX;
+    const r = document.createElementNS(SVGNS, "rect");
+    r.setAttribute("class", "span-rect" + (ctx.sel === i ? " sel" : ""));
+    r.setAttribute("x", x0); r.setAttribute("y", 0);
+    r.setAttribute("width", Math.max(1, x1 - x0)); r.setAttribute("height", H);
+    r.onmousedown = e => startDrag(e, ctx, i, "move");
+    svg.appendChild(r);
+    for (const [edge, ex] of [["start", x0], ["end", x1]]) {
+      const hd = document.createElementNS(SVGNS, "rect");
+      hd.setAttribute("class", "handle");
+      hd.setAttribute("x", ex - 3); hd.setAttribute("y", 0);
+      hd.setAttribute("width", 6); hd.setAttribute("height", H);
+      hd.onmousedown = e => startDrag(e, ctx, i, edge);
+      svg.appendChild(hd);
+    }
+    const tx = document.createElementNS(SVGNS, "text");
+    tx.setAttribute("class", "span-lbl");
+    tx.setAttribute("x", x0 + 2); tx.setAttribute("y", 12);
+    tx.textContent = s.motif_name;
+    svg.appendChild(tx);
+    const xb = document.createElementNS(SVGNS, "text");
+    xb.setAttribute("class", "span-x");
+    xb.setAttribute("x", Math.max(x0 + 2, x1 - 11));
+    xb.setAttribute("y", 13);
+    xb.textContent = "×";
+    xb.onmousedown = e => { e.stopPropagation(); e.preventDefault(); };
+    xb.onclick = e => {
+      e.stopPropagation();
+      ctx.spans.splice(i, 1); ctx.sel = null;
+      renderSpans(ctx); save(ctx);
+    };
+    svg.appendChild(xb);
+  });
+}
+
+function svgX(ctx, e) {
+  const rb = ctx.svg.getBoundingClientRect();
+  return Math.round(Math.max(0, Math.min(L, (e.clientX - rb.left) / PX)));
+}
+
+function startDrag(e, ctx, i, mode) {
+  e.stopPropagation(); e.preventDefault();
+  ctx.sel = i; renderSpans(ctx);
+  const s = ctx.spans[i];
+  const startPos = svgX(ctx, e), s0 = s.start, e0 = s.end;
+  function mv(ev) {
+    const p = svgX(ctx, ev), dp = p - startPos;
+    if (mode === "start") s.start = Math.min(s.end - 1, Math.max(0, p));
+    else if (mode === "end") s.end = Math.max(s.start + 1, Math.min(L, p));
+    else {
+      let ns = s0 + dp, ne = e0 + dp, w = e0 - s0;
+      ns = Math.max(0, Math.min(L - w, ns)); ne = ns + w;
+      s.start = ns; s.end = ne;
+    }
+    renderSpans(ctx);
+  }
+  function up() {
+    document.removeEventListener("mousemove", mv);
+    document.removeEventListener("mouseup", up);
+    save(ctx);
+  }
+  document.addEventListener("mousemove", mv);
+  document.addEventListener("mouseup", up);
+}
+
+function attachCreate(ctx) {
+  ctx.svg.addEventListener("mousedown", e => {
+    if (e.target !== ctx.svg) return;       // started on bg only
+    e.preventDefault();
+    const p0 = svgX(ctx, e);
+    const sp = { motif_name: `user pattern ${genK++}`, start: p0, end: p0 + 1, strand: "+" };
+    ctx.spans.push(sp);
+    const i = ctx.spans.length - 1;
+    ctx.sel = i;
+    function mv(ev) {
+      const p = svgX(ctx, ev);
+      sp.start = Math.max(0, Math.min(p0, p));
+      sp.end = Math.max(sp.start + 1, Math.min(L, Math.max(p0, p)));
+      renderSpans(ctx);
+    }
+    function up() {
+      document.removeEventListener("mousemove", mv);
+      document.removeEventListener("mouseup", up);
+    }
+    document.addEventListener("mousemove", mv);
+    document.addEventListener("mouseup", up);
+    renderSpans(ctx);
+  });
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+body { font-family: sans-serif; margin: 0; }
+#bar { position: sticky; top: 0; background: #fff; padding: 8px;
+       border-bottom: 1px solid #ccc; display: flex; gap: 10px; align-items: center; }
+#bar input { width: 80px; }
+#range { color: #555; }
+.row { border: 2px solid transparent; padding: 6px; display: flex;
+       align-items: center; gap: 8px; }
+.row.flash { border-color: #2ca02c; }
+.lbl { width: 60px; font-weight: bold; }
+.scroll { overflow-x: auto; flex: 1; }
+.plot { position: relative; height: 140px; }
+.plot canvas { display: block; position: absolute; left: 0; top: 0; }
+.plot svg { position: absolute; left: 0; top: 0; }
+.span-rect { fill: rgba(120,120,120,0.18); stroke: #555; cursor: move; }
+.span-rect.sel { stroke: #d62728; stroke-width: 2; }
+.handle { fill: rgba(0,0,0,0.0); cursor: ew-resize; }
+.span-lbl { font-size: 10px; fill: #333; pointer-events: none; }
