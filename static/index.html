@@ -9,8 +9,9 @@
 body.dark { --bg:#1e1e1e; --fg:#e4e4e4; --muted:#9a9a9a; --bar:#252526;
         --border:#444; --span:rgba(200,200,200,0.20); --spanstroke:#aaa; }
 body { font-family: sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
-#bar { position: sticky; top: 0; background: var(--bar); padding: 8px;
-       border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: center; }
+#bar { position: sticky; top: 0; z-index: 100; background: var(--bar); padding: 8px;
+       border-bottom: 1px solid var(--border); display: flex; gap: 10px;
+       align-items: center; flex-wrap: wrap; }
 #bar { font-size: 13px; }
 #nav { display: flex; align-items: center; gap: 4px; }
 #nav button { padding: 1px 6px; line-height: 1; }
@@ -40,9 +41,32 @@ body { font-family: sans-serif; margin: 0; background: var(--bg); color: var(--f
 #clear { color: #fff; background: #d62728; border: none; padding: 2px 9px;
          border-radius: 3px; cursor: pointer; font-size: 12px; }
 #pp { width: 48px; }
+#modepick { position: fixed; inset: 0; z-index: 1000; background: var(--bg);
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 18px; }
+#modepick h1 { font-size: 20px; font-weight: normal; color: var(--muted); }
+#modepick .mp { font-size: 16px; padding: 14px 28px; cursor: pointer;
+        border: 1px solid var(--border); background: var(--bar);
+        color: var(--fg); border-radius: 4px; }
+#seam { display: none; padding: 8px; }
+#seambar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+        padding: 8px; border-bottom: 1px solid var(--border); }
+#seamnote { color: #d62728; font-size: 13px; }
+.seam-panel { border: 2px solid transparent; padding: 8px 6px;
+        display: flex; flex-direction: column; gap: 3px; }
+.seam-panel.flash { border-color: #2ca02c; }
+.seam-head { font-weight: bold; line-height: 1.1; }
+.seam-head .mp-meta { font-weight: normal; color: var(--muted);
+        margin-left: 10px; }
 </style>
 </head>
 <body>
+<div id="modepick">
+  <h1>situate</h1>
+  <button class="mp" id="mp-koo">Koo browser</button>
+  <button class="mp" id="mp-seam">SEAM 3-panel viewer</button>
+</div>
+<div id="koo">
 <div id="bar">
   <span id="nav">
     <button id="prev" title="previous page">&#9664;</button>
@@ -61,6 +85,7 @@ body { font-family: sans-serif; margin: 0; background: var(--bg); color: var(--f
   </select></label>
   <button id="dir" title="ascending / descending">&#8593;</button>
   <label>cell line <select id="cl"></select></label>
+  <label>attribution <select id="method"></select></label>
   <label><input type="checkbox" id="nameTog" checked> Name</label>
   <label><input type="checkbox" id="hyp" checked> Hypothetical</label>
   <label><input type="checkbox" id="dark"> Dark</label>
@@ -69,9 +94,42 @@ body { font-family: sans-serif; margin: 0; background: var(--bg); color: var(--f
   <button id="clear" title="wipe the continuous annotation cache">Clear cache</button>
 </div>
 <div id="rows"></div>
+</div>
+<div id="seam">
+  <div id="seambar">
+    <strong>SEAM 3-panel viewer</strong>
+    <button id="seam-prev" title="previous page">&#9664;</button>
+    <button id="seam-next" title="next page">&#9654;</button>
+    <select id="seam-pp" title="units per page"><option>3</option><option>5</option><option selected>10</option><option>20</option><option>50</option></select>
+    <label><input type="checkbox" id="seam-hyp" checked> Hypothetical</label>
+    <label>maps <select id="seam-src">
+      <option value="var200" selected>var200 (corrected)</option>
+      <option value="orig">original</option>
+    </select></label>
+    <label>map <select id="seam-map">
+      <option value="foreground_scaled" selected>foregrounds only</option>
+      <option value="">All maps</option>
+      <option value="average_background">average_background</option>
+      <option value="average_background_scaled">average_background_scaled</option>
+      <option value="wt_attribution">wt_attribution</option>
+      <option value="ref_cluster_avg">ref_cluster_avg</option>
+    </select></label>
+    <label>bin <select id="seam-bin">
+      <option value="">All</option>
+      <option value="activating">activating</option>
+      <option value="neutral">neutral</option>
+      <option value="repressing">repressing</option>
+    </select></label>
+    <span id="seamnote"></span>
+    <span id="seamcount" class="mp-meta"></span>
+    <span class="grow"></span>
+    <a id="seam-dl" href="export.csv">Download CSV</a>
+  </div>
+  <div id="seampanels"></div>
+</div>
 <script>
 const PX = 5, H = 140;
-let N = 0, L = 0, cur = 0, genK = 0, HAS_OHE = false, MODE = "hyp", PAGE = 10, CL = "";
+let N = 0, L = 0, cur = 0, genK = 0, HAS_OHE = false, MODE = "hyp", PAGE = 10, CL = "", METHOD = "";
 let TOTAL = 0, SORT = "idx", DIR = "asc", SHOW_NAME = true;
 let lastData = [];
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -88,6 +146,16 @@ async function init() {
   }
   clSel.disabled = m.cell_lines.length < 2;
   clSel.onchange = () => { CL = clSel.value; cur = 0; load(); };
+  METHOD = m.method;
+  const mSel = document.getElementById("method");
+  const mLabel = v => v === "intgrad" ? "intgrad (100 shuffles)" : v;
+  for (const v of m.methods) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = mLabel(v); if (v === METHOD) o.selected = true;
+    mSel.appendChild(o);
+  }
+  mSel.disabled = m.methods.length < 2;
+  mSel.onchange = () => { METHOD = mSel.value; cur = 0; load(); };
   document.getElementById("sort").onchange = e => {
     SORT = e.target.value; cur = 0; load();
   };
@@ -103,7 +171,7 @@ async function init() {
     let v = parseInt(jump.value);
     if (isNaN(v) || v < 0 || v >= N) return;
     const r = await (await fetch(
-      `pos?idx=${v}&sort=${SORT}&dir=${DIR}&cl=${CL}`)).json();
+      `pos?idx=${v}&sort=${SORT}&dir=${DIR}&cl=${CL}&method=${METHOD}`)).json();
     cur = Math.max(0, r.pos); load();
   };
   document.getElementById("pp").onchange = e => {
@@ -123,7 +191,7 @@ async function init() {
     MODE = hyp.checked ? "hyp" : "obs";
     document.querySelectorAll(".row").forEach(row => {
       const im = row.querySelector(".plot img");
-      if (im) im.src = `logo/${row.dataset.idx}.png?mode=${MODE}&cl=${CL}`;
+      if (im) im.src = `logo/${row.dataset.idx}.png?mode=${MODE}&cl=${CL}&method=${METHOD}`;
     });
   };
   const dk = document.getElementById("dark");
@@ -138,7 +206,7 @@ async function init() {
 
 async function load() {
   const res = await (await fetch(
-    `batch?start=${cur}&n=${PAGE}&sort=${SORT}&dir=${DIR}&cl=${CL}`)).json();
+    `batch?start=${cur}&n=${PAGE}&sort=${SORT}&dir=${DIR}&cl=${CL}&method=${METHOD}`)).json();
   lastData = res.items;
   TOTAL = res.total;
   if (cur > 0 && cur >= TOTAL) { cur = 0; return load(); }
@@ -173,6 +241,11 @@ function makeRow(d) {
     pr.className = "nm"; pr.textContent = `pred ${d.pred}`;
     head.appendChild(pr);
   }
+  if (d.act != null) {
+    const ac = document.createElement("span");
+    ac.className = "nm"; ac.textContent = `act ${d.act}`;
+    head.appendChild(ac);
+  }
   const scroll = document.createElement("div");
   scroll.className = "scroll";
   const plot = document.createElement("div");
@@ -182,7 +255,7 @@ function makeRow(d) {
 
   const img = document.createElement("img");
   img.width = W; img.height = H;
-  img.src = `logo/${d.idx}.png?mode=${MODE}&cl=${CL}`;
+  img.src = `logo/${d.idx}.png?mode=${MODE}&cl=${CL}&method=${METHOD}`;
   plot.appendChild(img);
 
   const svg = document.createElementNS(SVGNS, "svg");
@@ -316,7 +389,171 @@ function attachCreate(ctx) {
   });
 }
 
-init();
+// ---- Landing mode select ----------------------------------------------
+let kooStarted = false;
+function enterKoo() {
+  document.getElementById("modepick").style.display = "none";
+  document.getElementById("koo").style.display = "";
+  document.getElementById("seam").style.display = "none";
+  if (!kooStarted) { kooStarted = true; init(); }
+}
+function enterSeam() {
+  document.getElementById("modepick").style.display = "none";
+  document.getElementById("koo").style.display = "none";
+  document.getElementById("seam").style.display = "block";
+  seamInit();
+}
+document.getElementById("mp-koo").onclick = enterKoo;
+document.getElementById("mp-seam").onclick = enterSeam;
+
+// ---- SEAM 3-panel viewer ----------------------------------------------
+// L is fixed at 200 for SEAM maps; the shared overlay helpers
+// (renderSpans / startDrag / attachCreate / svgX) read the module-global
+// L, so set it here when SEAM mode is entered. The Koo init() resets L
+// from /meta if the user later picks the Koo browser.
+const SEAM_L = 200;
+let seamEntries = [], seamInited = false;
+let seamPage = 0, SEAM_PAGE = 10;
+
+async function seamInit() {
+  if (!seamInited) {
+    seamInited = true;
+    document.getElementById("seam-src").onchange = seamLoad;
+    document.getElementById("seam-bin").onchange = seamLoad;
+    document.getElementById("seam-map").onchange = seamLoad;
+    document.getElementById("seam-pp").onchange = (e) => {
+      SEAM_PAGE = parseInt(e.target.value) || 10; seamPage = 0; seamRender();
+    };
+    document.getElementById("seam-prev").onclick = () => {
+      seamPage = Math.max(0, seamPage - 1); seamRender();
+    };
+    document.getElementById("seam-next").onclick = () => {
+      const u = window._seamUnits || [];
+      if ((seamPage + 1) * SEAM_PAGE < u.length) { seamPage++; seamRender(); }
+    };
+    document.getElementById("seam-hyp").onchange = () => seamRender();
+  }
+  await seamLoad();
+}
+
+function seamSrc() { return document.getElementById("seam-src").value; }
+
+async function seamLoad() {
+  const bin = document.getElementById("seam-bin").value;
+  const mapSel = document.getElementById("seam-map").value;
+  const q = new URLSearchParams({ src: seamSrc() });
+  if (bin) q.set("actbin", bin);
+  const r = await (await fetch("seam/available?" + q)).json();
+  seamEntries = r.entries || [];
+  // entries are per (ct,seq) with a list of maps; flatten to one
+  // pickable unit per (ct,seq,map) that actually exists. The map
+  // <select> ("" = all maps) restricts which maps become units.
+  const units = [];
+  for (const e of seamEntries)
+    for (const m of e.maps)
+      if (!mapSel || m === mapSel)
+        units.push({ ct: e.ct, seq: e.seq, map: m, actbin: e.actbin || "",
+                     spans: (e.spans && e.spans[m]) || [] });
+  window._seamUnits = units;
+  document.getElementById("seam-hyp").disabled = !r.has_wt_ohe;
+  seamPage = 0;
+  seamRender();
+}
+
+// Paginate through ALL units (no random sampling), mirroring the Koo
+// browser's prev/next/per-page paging.
+function seamRender() {
+  const units = window._seamUnits || [];
+  const maxPage = Math.max(0, Math.ceil(units.length / SEAM_PAGE) - 1);
+  if (seamPage > maxPage) seamPage = maxPage;
+  const start = seamPage * SEAM_PAGE;
+  const page = units.slice(start, start + SEAM_PAGE);
+  document.getElementById("seamcount").textContent =
+    units.length ? `${start + 1}–${start + page.length} / ${units.length}` : "0 / 0";
+  document.getElementById("seamnote").textContent =
+    units.length ? "" : "No SEAM maps for this source/bin.";
+  L = SEAM_L;
+  const root = document.getElementById("seampanels");
+  root.innerHTML = "";
+  for (const u of page) root.appendChild(makeSeamPanel(u));
+}
+
+function makeSeamPanel(u) {
+  const panel = document.createElement("div");
+  panel.className = "seam-panel";
+  const head = document.createElement("div");
+  head.className = "seam-head";
+  head.textContent = u.ct;
+  const meta = document.createElement("span");
+  meta.className = "mp-meta";
+  meta.textContent = `seq ${u.seq} · ${u.map}`
+    + (u.actbin ? ` · ${u.actbin}` : "");
+  head.appendChild(meta);
+
+  const scroll = document.createElement("div");
+  scroll.className = "scroll";
+  const plot = document.createElement("div");
+  plot.className = "plot";
+  const W = SEAM_L * PX;
+  plot.style.width = W + "px";
+
+  const img = document.createElement("img");
+  img.width = W; img.height = H;
+  img.src = `seam/logo?ct=${encodeURIComponent(u.ct)}`
+    + `&seq=${encodeURIComponent(u.seq)}&map=${encodeURIComponent(u.map)}`
+    + `&src=${encodeURIComponent(seamSrc())}`
+    + `&mode=${document.getElementById("seam-hyp").checked ? "hyp" : "obs"}`;
+  plot.appendChild(img);
+
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  plot.appendChild(svg);
+
+  const spans = (u.spans || []).map(s => ({ ...s }));
+  const ctx = { svg, spans, W, sel: null, seam: u, panel };
+  renderSpans(ctx);
+  attachCreate(ctx);
+  scroll.appendChild(plot);
+
+  const body = document.createElement("div");
+  body.className = "rbody";
+  body.appendChild(scroll);
+  const setBtn = document.createElement("button");
+  setBtn.textContent = "Set";
+  setBtn.onclick = () => seamSave(ctx);
+  body.appendChild(setBtn);
+
+  panel.tabIndex = 0;
+  panel.addEventListener("keydown", e => {
+    if ((e.key === "Delete" || e.key === "Backspace") && ctx.sel != null) {
+      ctx.spans.splice(ctx.sel, 1); ctx.sel = null;
+      renderSpans(ctx); seamSave(ctx);
+    }
+  });
+  panel.appendChild(head); panel.appendChild(body);
+  return panel;
+}
+
+async function seamSave(ctx) {
+  const u = ctx.seam;
+  const r = await fetch("seam/set", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ct: u.ct, seq: u.seq, map: u.map, spans: ctx.spans }),
+  });
+  if ((await r.json()).ok) {
+    ctx.panel.classList.add("flash");
+    setTimeout(() => ctx.panel.classList.remove("flash"), 600);
+  }
+}
+
+// save(ctx) is the Koo-view autosave. SEAM panels carry ctx.seam and
+// route through seamSave instead so the shared startDrag autosave works
+// in both views without regressing Koo.
+const _kooSave = save;
+save = function (ctx) {
+  if (ctx && ctx.seam) return seamSave(ctx);
+  return _kooSave(ctx);
+};
 </script>
 </body>
 </html>
